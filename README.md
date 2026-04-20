@@ -421,4 +421,4 @@ Encontrou um bug ou tem uma sugestão? Abra uma issue no GitHub:
 
 ---
 
-Desenvolvido com ❤️ para a comunidade Evolution
+Desenvolvido com ❤️ para a comunidade Evolution# trigger
