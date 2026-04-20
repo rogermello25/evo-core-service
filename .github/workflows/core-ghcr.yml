@@ -5,8 +5,9 @@ on:
   push:
     branches: [main]
     paths:
-      - 'evo-ai-core-service-community/**'
+      - '**'
       - '.github/workflows/core-ghcr.yml'
+      - 'Dockerfile'
 
 permissions:
   contents: read
@@ -37,8 +38,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./evo-ai-core-service-community
-          file: ./evo-ai-core-service-community/Dockerfile
+          context: .
+          file: ./Dockerfile
           platforms: linux/amd64
           push: true
           provenance: false
