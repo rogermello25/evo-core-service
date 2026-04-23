@@ -303,5 +303,5 @@ func GetEvoAuthService() (EvoAuthService, error) {
 	if globalEvoAuthService == nil {
 		return nil, &AuthServiceNotInitializedError{}
 	}
-	return globalEvoAuthService
+	return globalEvoAuthService, nil
 }
