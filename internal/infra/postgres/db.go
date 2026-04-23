@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"database/sql"
+	"errors"
 	"evo-ai-core-service/internal/config"
 	"fmt"
 	"log"
@@ -15,78 +16,116 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func Connect(DBConfig *config.DBConfig) *sql.DB {
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+// ErrDBConnect is returned when all retry attempts to connect to the database fail.
+var ErrDBConnect = errors.New("failed to connect to database after retries")
+
+const maxRetryAttempts = 5
+
+func buildDSN(DBConfig *config.DBConfig) string {
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		DBConfig.Host, DBConfig.Port, DBConfig.User, DBConfig.Password, DBConfig.DBName, DBConfig.SSLMode)
+}
 
-	conn, err := sql.Open("postgres", dsn)
-	if err != nil {
-		log.Fatalf("error opening database: %v", err)
+// retryWithBackoff calls fn up to maxRetryAttempts times with exponential backoff (2s, 4s, 8s, 16s, 32s).
+// Returns the last error if all attempts fail.
+func retryWithBackoff(fn func() error) error {
+	delay := 2 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < maxRetryAttempts {
+			log.Printf("DB connect attempt %d/%d failed: %v — retrying in %s...",
+				attempt, maxRetryAttempts, lastErr, delay)
+			time.Sleep(delay)
+			delay *= 2
+		}
 	}
+	return lastErr
+}
 
-	if err = conn.Ping(); err != nil {
-		log.Fatalf("error connecting to database: %v", err)
+func Connect(DBConfig *config.DBConfig) (*sql.DB, error) {
+	dsn := buildDSN(DBConfig)
+
+	var conn *sql.DB
+	err := retryWithBackoff(func() error {
+		var openErr error
+		conn, openErr = sql.Open("postgres", dsn)
+		if openErr != nil {
+			return openErr
+		}
+		if pingErr := conn.Ping(); pingErr != nil {
+			conn.Close()
+			return pingErr
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDBConnect, err)
 	}
 
 	log.Println("Connected to Postgres database.")
-
-	return conn
+	return conn, nil
 }
 
-func ConnectGorm(DBConfig *config.DBConfig) *gorm.DB {
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		DBConfig.Host, DBConfig.Port, DBConfig.User, DBConfig.Password, DBConfig.DBName, DBConfig.SSLMode)
+func ConnectGorm(DBConfig *config.DBConfig) (*gorm.DB, error) {
+	dsn := buildDSN(DBConfig)
 
-	// Configure GORM with optimized settings
 	gormConfig := &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
 		},
-		PrepareStmt:                              true,  // Cache prepared statements
-		DisableForeignKeyConstraintWhenMigrating: false, // Keep foreign key constraints
+		PrepareStmt:                              true,
+		DisableForeignKeyConstraintWhenMigrating: false,
 	}
 
-	conn, err := gorm.Open(postgres.Open(dsn), gormConfig)
+	var conn *gorm.DB
+	err := retryWithBackoff(func() error {
+		var openErr error
+		conn, openErr = gorm.Open(postgres.Open(dsn), gormConfig)
+		if openErr != nil {
+			return openErr
+		}
+		sqlDB, sqlErr := conn.DB()
+		if sqlErr != nil {
+			return sqlErr
+		}
+		return sqlDB.Ping()
+	})
+
 	if err != nil {
-		log.Fatalf("error opening database: %v", err)
+		return nil, fmt.Errorf("%w: %v", ErrDBConnect, err)
 	}
 
-	// Get underlying sql.DB to configure connection pool
 	sqlDB, err := conn.DB()
 	if err != nil {
-		log.Fatalf("error getting underlying sql.DB: %v", err)
+		return nil, fmt.Errorf("error getting underlying sql.DB: %w", err)
 	}
 
-	// Parse configuration values
 	maxIdleConns := parseIntOrDefault(DBConfig.MaxIdleConns, 10)
 	maxOpenConns := parseIntOrDefault(DBConfig.MaxOpenConns, 100)
 	connMaxLifetime := parseDurationOrDefault(DBConfig.ConnMaxLifetime, time.Hour)
 	connMaxIdleTime := parseDurationOrDefault(DBConfig.ConnMaxIdleTime, 30*time.Minute)
 
-	// Configure connection pool with environment values
 	sqlDB.SetMaxIdleConns(maxIdleConns)
 	sqlDB.SetMaxOpenConns(maxOpenConns)
 	sqlDB.SetConnMaxLifetime(connMaxLifetime)
 	sqlDB.SetConnMaxIdleTime(connMaxIdleTime)
 
-	// Test the connection
-	if err := sqlDB.Ping(); err != nil {
-		log.Fatalf("error pinging database: %v", err)
-	}
-
 	log.Printf("Connected to Postgres database with connection pool: idle=%d, max=%d, lifetime=%s, idle_time=%s",
 		maxIdleConns, maxOpenConns, connMaxLifetime, connMaxIdleTime)
 
-	return conn
+	return conn, nil
 }
 
-// parseIntOrDefault parses string to int with fallback to default
 func parseIntOrDefault(value string, defaultValue int) int {
 	if value == "" {
 		return defaultValue
 	}
-
 	intValue, err := strconv.Atoi(value)
 	if err != nil {
 		log.Printf("Warning: Invalid integer value: %s, using default: %d", value, defaultValue)
@@ -95,12 +134,10 @@ func parseIntOrDefault(value string, defaultValue int) int {
 	return intValue
 }
 
-// parseDurationOrDefault parses string to time.Duration with fallback to default
 func parseDurationOrDefault(value string, defaultValue time.Duration) time.Duration {
 	if value == "" {
 		return defaultValue
 	}
-
 	duration, err := time.ParseDuration(value)
 	if err != nil {
 		log.Printf("Warning: Invalid duration value: %s, using default: %s", value, defaultValue.String())

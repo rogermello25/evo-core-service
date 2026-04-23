@@ -66,8 +66,11 @@ func main() {
 		}()
 	}
 
-	// Initialize database
-	db := postgres.ConnectGorm(&cfg.DB)
+	// Initialize database (retries with exponential backoff up to 30s)
+	db, err := postgres.ConnectGorm(&cfg.DB)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
 
 	// Initialize EvoAuth middleware
 	evoAuthMiddleware := middleware.NewEvoAuthMiddleware(cfg.EvoAuth.BaseURL)
