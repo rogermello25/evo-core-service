@@ -31,6 +31,12 @@ type NetworkError struct {
 	Message string
 }
 
+type AuthServiceNotInitializedError struct {}
+
+func (e *AuthServiceNotInitializedError) Error() string {
+	return "EvoAuthService not initialized. Call InitializeEvoAuthService first."
+}
+
 func (e *NetworkError) Error() string {
 	return fmt.Sprintf("Network error: %s", e.Message)
 }
@@ -293,9 +299,9 @@ func InitializeEvoAuthService(baseURL string) {
 }
 
 // GetEvoAuthService returns the global service instance
-func GetEvoAuthService() EvoAuthService {
+func GetEvoAuthService() (EvoAuthService, error) {
 	if globalEvoAuthService == nil {
-		panic("EvoAuthService not initialized. Call InitializeEvoAuthService first.")
+		return nil, &AuthServiceNotInitializedError{}
 	}
 	return globalEvoAuthService
 }
